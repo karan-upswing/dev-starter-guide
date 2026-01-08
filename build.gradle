@@ -1,0 +1,41 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.1'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
+
+group = 'com.example'
+version = '1.0.0'
+sourceCompatibility = '17'
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring WebFlux
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // R2DBC Driver (PostgreSQL)
+    implementation 'org.postgresql:r2dbc-postgresql:1.0.3.RELEASE'
+
+    // R2DBC SPI
+    implementation 'io.r2dbc:r2dbc-spi:1.0.0.RELEASE'
+
+    // R2DBC Pool
+    implementation 'io.r2dbc:r2dbc-pool:1.0.1.RELEASE'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
