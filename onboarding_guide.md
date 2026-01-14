@@ -3860,7 +3860,795 @@ logging:
 
 ---
 
-## 11. Project-Specific Setup
+## 11. Event Streaming and Apache Pulsar
+
+### What is Event Streaming?
+
+Event streaming is a paradigm for building applications that continuously produce, process, and consume streams of events in real-time. Unlike traditional request-response systems, event streaming enables asynchronous, decoupled communication between services.
+
+**Core Concepts:**
+- **Events**: Immutable records of something that happened (e.g., "User logged in", "Payment processed", "Order placed")
+- **Producers**: Applications that publish events to a stream
+- **Consumers**: Applications that subscribe to and process events from a stream
+- **Topics**: Named channels where events are published and consumed from
+
+### Why Event Streaming?
+
+Traditional systems often use direct service-to-service calls:
+
+```
+Service A → REST API → Service B
+          ↓
+    Tightly coupled
+    Synchronous
+    Single consumer
+```
+
+Event streaming decouples services:
+
+```
+Service A → Topic → Service B
+                  → Service C
+                  → Service D
+
+    Loosely coupled
+    Asynchronous
+    Multiple consumers
+```
+
+**Benefits:**
+1. **Decoupling**: Services don't need to know about each other
+2. **Scalability**: Add consumers without changing producers
+3. **Resilience**: Consumers can process events at their own pace
+4. **Replay**: Re-process historical events
+5. **Real-time**: Events processed as they happen
+
+**Use Cases:**
+- **Activity tracking**: User actions, click streams, page views
+- **Microservices communication**: Service-to-service messaging
+- **Event sourcing**: Store state changes as events
+- **Real-time analytics**: Process streams for insights
+- **CDC (Change Data Capture)**: Replicate database changes
+- **Notification systems**: Send emails, SMS, push notifications
+
+---
+
+### Apache Pulsar: Overview
+
+Apache Pulsar is a cloud-native, distributed messaging and streaming platform originally developed by Yahoo and now part of the Apache Software Foundation.
+
+**Key Characteristics:**
+- **Multi-tenancy**: Native support for multiple teams/applications in one cluster
+- **Geo-replication**: Built-in cross-datacenter replication
+- **Tiered storage**: Automatically offload old data to cheaper storage (S3, HDFS)
+- **Flexible messaging**: Supports both queuing and streaming patterns
+- **High throughput**: Handles millions of messages per second
+- **Durability**: Guaranteed message delivery with configurable persistence
+
+**Pulsar vs. Other Systems:**
+
+| Feature | Pulsar | Kafka | RabbitMQ |
+|---------|--------|-------|----------|
+| **Architecture** | Layered (compute + storage) | Monolithic | Monolithic |
+| **Multi-tenancy** | Native | Manual partitioning | Virtual hosts |
+| **Geo-replication** | Built-in | Mirror Maker | Plugins |
+| **Tiered storage** | Built-in | Recent addition | N/A |
+| **Messaging patterns** | Queuing + Streaming | Streaming | Queuing |
+| **Ordering guarantees** | Per-key ordering | Per-partition | Per-queue |
+
+---
+
+### Pulsar Architecture
+
+#### Core Components
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Pulsar Architecture                        │
+└─────────────────────────────────────────────────────────────┘
+
+    Producers                         Consumers
+        │                                 ▲
+        │                                 │
+        ▼                                 │
+┌─────────────────────────────────────────────────────────┐
+│                    Brokers (Serving Layer)               │
+│  - Handle connections                                    │
+│  - Route messages                                        │
+│  - Manage subscriptions                                  │
+│  - Stateless (can scale horizontally)                    │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│            BookKeeper (Storage Layer)                    │
+│  - Stores messages durably                               │
+│  - Replicates data                                       │
+│  - Independent scaling                                   │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                  ZooKeeper                               │
+│  - Metadata storage                                      │
+│  - Cluster coordination                                  │
+│  - Configuration management                              │
+└─────────────────────────────────────────────────────────┘
+```
+
+**1. Brokers (Serving Layer)**
+- Stateless servers that handle producer/consumer connections
+- Route messages between producers and BookKeeper
+- Manage topic ownership and subscriptions
+- Can be added/removed without data migration
+
+**2. BookKeeper (Storage Layer)**
+- Distributed log storage system
+- Stores messages in "ledgers" (append-only logs)
+- Replicates data across multiple nodes for durability
+- Scales independently from brokers
+
+**3. ZooKeeper**
+- Stores cluster metadata
+- Manages broker discovery and coordination
+- Handles topic ownership assignments
+
+**Why this architecture matters:**
+- **Separation of concerns**: Serving and storage scale independently
+- **Instant scalability**: Add brokers without rebalancing data
+- **Durability**: Data replicated in BookKeeper, not tied to specific brokers
+- **No rebalancing overhead**: Unlike Kafka, adding brokers doesn't trigger data movement
+
+---
+
+### Pulsar Concepts
+
+#### Topics
+
+A topic is a named channel for messages.
+
+**Topic naming:**
+```
+{persistent|non-persistent}://tenant/namespace/topic
+
+Examples:
+persistent://public/default/user-events
+persistent://my-company/production/order-events
+non-persistent://public/default/logs
+```
+
+**Topic types:**
+- **Persistent**: Messages stored durably in BookKeeper
+- **Non-persistent**: Messages kept in memory only (lower latency, no durability)
+
+**Partitioned topics:**
+```kotlin
+// Single partition (ordered messages)
+persistent://public/default/orders
+
+// Partitioned topic (higher throughput, ordering per partition)
+persistent://public/default/orders-partitioned-0
+persistent://public/default/orders-partitioned-1
+persistent://public/default/orders-partitioned-2
+```
+
+#### Messages
+
+Structure of a Pulsar message:
+
+```kotlin
+data class PulsarMessage(
+    val payload: ByteArray,           // Actual message content
+    val key: String?,                 // Optional routing key
+    val properties: Map<String, String>, // Custom metadata
+    val eventTime: Long?,             // Event timestamp
+    val messageId: MessageId,         // Unique identifier
+    val sequenceId: Long              // Producer sequence number
+)
+```
+
+**Example:**
+```kotlin
+// Publishing a message
+val message = pulsarClient.newMessage()
+    .value("User logged in")
+    .key("user-123")                              // Routing key
+    .property("user_id", "123")                   // Custom metadata
+    .property("ip_address", "192.168.1.1")
+    .eventTime(System.currentTimeMillis())
+    .send()
+```
+
+#### Subscriptions
+
+A subscription is a named cursor that tracks which messages have been consumed.
+
+**Subscription Types:**
+
+**1. Exclusive (Default)**
+```
+Topic → [Messages] → Single Consumer
+                      (Only one can be active)
+
+Use case: Ordered processing by a single consumer
+```
+
+**2. Shared (Queue Pattern)**
+```
+Topic → [Messages] → Consumer 1 (receives msg 1, 3, 5...)
+                  → Consumer 2 (receives msg 2, 4, 6...)
+                  → Consumer 3 (receives msg 7, 9...)
+
+Messages round-robin distributed
+No ordering guarantee
+Use case: High throughput, parallel processing
+```
+
+**3. Failover**
+```
+Topic → [Messages] → Consumer 1 (Active - receives all)
+                  → Consumer 2 (Standby)
+                  → Consumer 3 (Standby)
+
+If Consumer 1 fails, Consumer 2 takes over
+Use case: High availability with ordering
+```
+
+**4. Key_Shared**
+```
+Topic → [Messages with key=A] → Consumer 1
+      → [Messages with key=B] → Consumer 2
+      → [Messages with key=C] → Consumer 1
+
+Messages with same key go to same consumer
+Order guaranteed per key
+Use case: Parallel processing with per-key ordering
+```
+
+**Example:**
+```kotlin
+// Exclusive subscription
+val consumer = client.newConsumer()
+    .topic("persistent://public/default/orders")
+    .subscriptionName("order-processor")
+    .subscriptionType(SubscriptionType.Exclusive)
+    .subscribe()
+
+// Shared subscription (load balancing)
+val consumer = client.newConsumer()
+    .topic("persistent://public/default/logs")
+    .subscriptionName("log-processors")
+    .subscriptionType(SubscriptionType.Shared)
+    .subscribe()
+
+// Key_Shared (parallel with ordering)
+val consumer = client.newConsumer()
+    .topic("persistent://public/default/user-events")
+    .subscriptionName("event-handlers")
+    .subscriptionType(SubscriptionType.Key_Shared)
+    .subscribe()
+```
+
+---
+
+### Using Pulsar with Spring Boot
+
+#### Dependencies
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("org.apache.pulsar:pulsar-client:3.0.0")
+    implementation("org.springframework.boot:spring-boot-starter-webflux")
+
+    // For reactive Pulsar client
+    implementation("org.apache.pulsar:pulsar-client-reactive-adapter:3.0.0")
+}
+```
+
+#### Configuration
+
+```kotlin
+// application.yml
+pulsar:
+  service-url: pulsar://localhost:6650
+  admin-url: http://localhost:8080
+  connection-timeout: 30s
+  operation-timeout: 30s
+
+  producer:
+    topic: persistent://public/default/events
+    batching-enabled: true
+    batch-size: 100
+
+  consumer:
+    subscription-name: my-service-subscription
+    subscription-type: Shared
+    topics:
+      - persistent://public/default/user-events
+      - persistent://public/default/order-events
+```
+
+#### Pulsar Client Configuration
+
+```kotlin
+@Configuration
+class PulsarConfig(
+    @Value("\${pulsar.service-url}") private val serviceUrl: String
+) {
+
+    @Bean
+    fun pulsarClient(): PulsarClient {
+        return PulsarClient.builder()
+            .serviceUrl(serviceUrl)
+            .connectionTimeout(30, TimeUnit.SECONDS)
+            .operationTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+}
+```
+
+#### Producer Example
+
+```kotlin
+@Service
+class EventPublisher(
+    private val pulsarClient: PulsarClient
+) {
+    private val logger = LoggerFactory.getLogger(EventPublisher::class.java)
+
+    private val producer: Producer<String> by lazy {
+        pulsarClient.newProducer(Schema.STRING)
+            .topic("persistent://public/default/user-events")
+            .producerName("user-event-publisher")
+            .enableBatching(true)
+            .batchingMaxMessages(100)
+            .batchingMaxPublishDelay(10, TimeUnit.MILLISECONDS)
+            .create()
+    }
+
+    fun publishUserEvent(userId: String, event: String): Mono<MessageId> {
+        return Mono.fromFuture {
+            producer.newMessage()
+                .key(userId)                                // For key-based routing
+                .value(event)
+                .property("timestamp", System.currentTimeMillis().toString())
+                .sendAsync()
+        }
+        .doOnSuccess { messageId ->
+            logger.info("Published event for user $userId: $messageId")
+        }
+        .doOnError { error ->
+            logger.error("Failed to publish event for user $userId", error)
+        }
+    }
+
+    @PreDestroy
+    fun cleanup() {
+        producer.close()
+    }
+}
+```
+
+**Usage in Controller:**
+```kotlin
+@RestController
+@RequestMapping("/api/users")
+class UserController(
+    private val userService: UserService,
+    private val eventPublisher: EventPublisher
+) {
+
+    @PostMapping
+    fun createUser(@RequestBody user: User): Mono<User> {
+        return userService.create(user)
+            .flatMap { savedUser ->
+                // Publish event asynchronously
+                eventPublisher.publishUserEvent(
+                    savedUser.id,
+                    "USER_CREATED"
+                ).thenReturn(savedUser)
+            }
+    }
+}
+```
+
+#### Consumer Example
+
+```kotlin
+@Service
+class EventConsumer(
+    private val pulsarClient: PulsarClient,
+    private val notificationService: NotificationService
+) {
+    private val logger = LoggerFactory.getLogger(EventConsumer::class.java)
+
+    @PostConstruct
+    fun startConsuming() {
+        val consumer = pulsarClient.newConsumer(Schema.STRING)
+            .topic("persistent://public/default/user-events")
+            .subscriptionName("notification-service")
+            .subscriptionType(SubscriptionType.Shared)
+            .messageListener { consumer, message ->
+                try {
+                    processMessage(message)
+                    consumer.acknowledge(message)
+                } catch (e: Exception) {
+                    logger.error("Failed to process message ${message.messageId}", e)
+                    consumer.negativeAcknowledge(message)
+                }
+            }
+            .subscribe()
+
+        logger.info("Started consuming from user-events topic")
+    }
+
+    private fun processMessage(message: Message<String>) {
+        val userId = message.key
+        val event = message.value
+        val timestamp = message.properties["timestamp"]
+
+        logger.info("Processing event: $event for user $userId at $timestamp")
+
+        when (event) {
+            "USER_CREATED" -> notificationService.sendWelcomeEmail(userId)
+            "USER_UPDATED" -> notificationService.sendUpdateConfirmation(userId)
+            "USER_DELETED" -> notificationService.sendGoodbyeEmail(userId)
+        }
+    }
+}
+```
+
+#### Reactive Consumer with Reactor
+
+```kotlin
+@Service
+class ReactiveEventConsumer(
+    private val pulsarClient: PulsarClient
+) {
+    private val logger = LoggerFactory.getLogger(ReactiveEventConsumer::class.java)
+
+    fun consumeEvents(): Flux<String> {
+        val consumer = pulsarClient.newConsumer(Schema.STRING)
+            .topic("persistent://public/default/events")
+            .subscriptionName("reactive-consumer")
+            .subscriptionType(SubscriptionType.Shared)
+            .subscribe()
+
+        return Flux.create { sink ->
+            Thread {
+                while (!sink.isCancelled) {
+                    try {
+                        val message = consumer.receive(1, TimeUnit.SECONDS)
+                        if (message != null) {
+                            sink.next(message.value)
+                            consumer.acknowledge(message)
+                        }
+                    } catch (e: Exception) {
+                        logger.error("Error receiving message", e)
+                        sink.error(e)
+                    }
+                }
+                consumer.close()
+            }.start()
+        }
+    }
+}
+```
+
+---
+
+### Message Acknowledgment
+
+Pulsar tracks which messages have been consumed using acknowledgments.
+
+**Acknowledgment Types:**
+
+**1. Individual Acknowledgment**
+```kotlin
+val message = consumer.receive()
+// Process message
+consumer.acknowledge(message)  // Mark this specific message as consumed
+```
+
+**2. Cumulative Acknowledgment**
+```kotlin
+val message1 = consumer.receive()
+val message2 = consumer.receive()
+val message3 = consumer.receive()
+
+// Acknowledging message3 also acknowledges 1 and 2
+consumer.acknowledgeCumulative(message3)
+```
+
+**3. Negative Acknowledgment**
+```kotlin
+val message = consumer.receive()
+try {
+    processMessage(message)
+    consumer.acknowledge(message)
+} catch (e: Exception) {
+    // Message will be redelivered
+    consumer.negativeAcknowledge(message)
+}
+```
+
+**4. Delayed Negative Acknowledgment**
+```kotlin
+consumer.negativeAcknowledge(message, 10, TimeUnit.SECONDS)
+// Message redelivered after 10 seconds
+```
+
+**Acknowledgment Timeout:**
+```kotlin
+val consumer = client.newConsumer()
+    .topic("my-topic")
+    .subscriptionName("my-sub")
+    .ackTimeout(30, TimeUnit.SECONDS)  // Auto-nack if not acked in 30s
+    .subscribe()
+```
+
+---
+
+### Dead Letter Queue (DLQ)
+
+When messages fail processing repeatedly, send them to a DLQ for manual inspection.
+
+```kotlin
+val consumer = client.newConsumer(Schema.STRING)
+    .topic("persistent://public/default/orders")
+    .subscriptionName("order-processor")
+    .deadLetterPolicy(
+        DeadLetterPolicy.builder()
+            .maxRedeliverCount(3)  // Retry 3 times
+            .deadLetterTopic("persistent://public/default/orders-dlq")
+            .build()
+    )
+    .subscribe()
+
+// After 3 negative acks, message goes to DLQ
+consumer.negativeAcknowledge(message)
+```
+
+**Processing DLQ:**
+```kotlin
+val dlqConsumer = client.newConsumer(Schema.STRING)
+    .topic("persistent://public/default/orders-dlq")
+    .subscriptionName("dlq-inspector")
+    .subscribe()
+
+// Manually inspect and handle failed messages
+```
+
+---
+
+### Message Retention and TTL
+
+**Retention Policy:**
+```kotlin
+// Configure via Pulsar admin API
+admin.namespaces().setRetention(
+    "public/default",
+    RetentionPolicies(
+        retentionTimeInMinutes = 4320,  // 3 days
+        retentionSizeInMB = 10240        // 10 GB
+    )
+)
+```
+
+**Time-to-Live (TTL):**
+```kotlin
+// Messages expire after TTL
+admin.namespaces().setNamespaceMessageTTL("public/default", 86400)  // 1 day
+
+// Or per-topic
+admin.topics().setMessageTTL("persistent://public/default/logs", 3600)  // 1 hour
+```
+
+---
+
+### Schema Registry
+
+Pulsar includes a built-in schema registry for type safety.
+
+```kotlin
+// Define schema
+data class UserEvent(
+    val userId: String,
+    val action: String,
+    val timestamp: Long
+)
+
+// Producer with schema
+val producer = client.newProducer(Schema.AVRO(UserEvent::class.java))
+    .topic("persistent://public/default/user-events")
+    .create()
+
+// Type-safe publishing
+producer.send(UserEvent("123", "LOGIN", System.currentTimeMillis()))
+
+// Consumer with schema
+val consumer = client.newConsumer(Schema.AVRO(UserEvent::class.java))
+    .topic("persistent://public/default/user-events")
+    .subscriptionName("event-processor")
+    .subscribe()
+
+// Type-safe consumption
+val message = consumer.receive()
+val event: UserEvent = message.value  // Automatically deserialized
+```
+
+**Supported schemas:**
+- Primitive types (String, Bytes, Int, etc.)
+- Avro
+- JSON
+- Protobuf
+- Custom schemas
+
+---
+
+### Best Practices
+
+1. **Use Appropriate Subscription Types**
+   - Exclusive: Ordered processing, single consumer
+   - Shared: High throughput, parallel processing
+   - Key_Shared: Parallel + per-key ordering
+   - Failover: High availability
+
+2. **Handle Backpressure**
+   ```kotlin
+   val consumer = client.newConsumer()
+       .receiverQueueSize(100)  // Limit in-memory buffer
+       .subscribe()
+   ```
+
+3. **Enable Batching for Producers**
+   ```kotlin
+   producer.enableBatching(true)
+       .batchingMaxMessages(100)
+       .batchingMaxPublishDelay(10, TimeUnit.MILLISECONDS)
+   ```
+
+4. **Set Timeouts**
+   ```kotlin
+   consumer.ackTimeout(30, TimeUnit.SECONDS)
+   ```
+
+5. **Use Dead Letter Queues**
+   - Prevent poison messages from blocking consumers
+   - Inspect and debug failed messages
+
+6. **Monitor Lag**
+   ```bash
+   # Check subscription backlog
+   bin/pulsar-admin topics stats persistent://public/default/my-topic
+   ```
+
+7. **Close Resources**
+   ```kotlin
+   @PreDestroy
+   fun cleanup() {
+       producer.close()
+       consumer.close()
+       pulsarClient.close()
+   }
+   ```
+
+---
+
+### Running Pulsar Locally
+
+**Using Docker:**
+```bash
+# Standalone mode (dev/testing)
+docker run -it -p 6650:6650 -p 8080:8080 \
+  apachepulsar/pulsar:3.0.0 \
+  bin/pulsar standalone
+
+# Access Pulsar admin
+docker exec -it <container-id> bin/pulsar-admin topics list public/default
+
+# Create topic
+docker exec -it <container-id> bin/pulsar-admin topics create \
+  persistent://public/default/my-topic
+
+# View topic stats
+docker exec -it <container-id> bin/pulsar-admin topics stats \
+  persistent://public/default/my-topic
+```
+
+**Using Docker Compose:**
+```yaml
+version: '3'
+services:
+  pulsar:
+    image: apachepulsar/pulsar:3.0.0
+    command: bin/pulsar standalone
+    ports:
+      - "6650:6650"   # Pulsar protocol
+      - "8080:8080"   # Admin API
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+```
+
+---
+
+### Common Patterns
+
+**1. Event Sourcing**
+```kotlin
+// Store all state changes as events
+fun updateUser(userId: String, updates: UserUpdates): Mono<User> {
+    return userRepository.findById(userId)
+        .flatMap { user ->
+            val updatedUser = user.apply(updates)
+            userRepository.save(updatedUser)
+                .flatMap { saved ->
+                    // Publish event
+                    eventPublisher.publish(
+                        UserEvent(userId, "USER_UPDATED", updates)
+                    ).thenReturn(saved)
+                }
+        }
+}
+```
+
+**2. CQRS (Command Query Responsibility Segregation)**
+```kotlin
+// Write side: Publish commands
+commandPublisher.publish(CreateOrderCommand(orderId, items))
+
+// Read side: Build read model from events
+eventConsumer.consume()
+    .filter { it is OrderCreatedEvent }
+    .flatMap { event ->
+        readModelRepository.save(
+            OrderReadModel(event.orderId, event.items)
+        )
+    }
+```
+
+**3. Saga Pattern**
+```kotlin
+// Distributed transaction across services
+fun processOrder(order: Order): Mono<Receipt> {
+    return orderService.createOrder(order)
+        .flatMap { orderId ->
+            // Publish event to trigger next step
+            eventPublisher.publish(
+                OrderCreatedEvent(orderId, order.items)
+            )
+        }
+}
+
+// Payment service listens and processes
+@EventHandler
+fun handleOrderCreated(event: OrderCreatedEvent) {
+    paymentService.processPayment(event.orderId)
+        .flatMap { payment ->
+            if (payment.success) {
+                eventPublisher.publish(PaymentSuccessEvent(event.orderId))
+            } else {
+                eventPublisher.publish(PaymentFailedEvent(event.orderId))
+            }
+        }
+}
+```
+
+---
+
+### Key Takeaways
+
+1. **Event Streaming**: Asynchronous, decoupled communication via events
+2. **Pulsar Architecture**: Separated serving (brokers) and storage (BookKeeper) layers
+3. **Subscriptions**: Control how messages are distributed (Exclusive, Shared, Failover, Key_Shared)
+4. **Acknowledgments**: Track message consumption and enable retries
+5. **Schemas**: Type-safe messaging with built-in schema registry
+6. **Patterns**: Event sourcing, CQRS, Saga for distributed systems
+
+---
+
+## 12. Project-Specific Setup
 
 ### Clone and Setup
 
@@ -3940,7 +4728,7 @@ Follow existing patterns in codebase:
 
 ---
 
-## 12. Learning Resources
+## 13. Learning Resources
 
 ### Official Documentation
 - **Kotlin**: https://kotlinlang.org/docs/home.html
