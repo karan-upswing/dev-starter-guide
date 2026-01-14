@@ -15,8 +15,9 @@ Welcome! This guide will help you build a strong foundation in backend developme
 8. [PostgreSQL Features and Internals](#8-postgresql-features-and-internals)
 9. [Gradle Build Tool](#9-gradle-build-tool)
 10. [Spring WebFlux](#10-spring-webflux)
-11. [Project-Specific Setup](#11-project-specific-setup)
-12. [Learning Resources](#12-learning-resources)
+11. [Event Streaming and Apache Pulsar](#11-event-streaming-and-apache-pulsar)
+12. [Project-Specific Setup](#12-project-specific-setup)
+13. [Learning Resources](#13-learning-resources)
 
 ---
 
